@@ -175,3 +175,25 @@ cython_debug/
 
 # VSCode:
 .vscode/
+
+# PDFs:
+*.pdf
+
+# Word Documents:
+*.docx
+
+# Graphics Files:
+*.png
+*.jpg
+
+# Graphics File Exceptions:
+!homework4/urlbot-screenshot.png
+
+# XML Files:
+*.xml
+
+# Zip Files:
+*.zip
+
+# Python Pickle Files:
+*.pkl
