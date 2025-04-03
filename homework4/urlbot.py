@@ -8,9 +8,12 @@ including summarizing, providing sources, and more.
 '''
 
 
+# Update runtime behavior:
+# Note that this isn't needed in Python v3.11+
+from __future__ import annotations
+
 # Standard Library
 import argparse
-from collections.abc import Callable
 from datetime import datetime
 from functools import cache, wraps
 from importlib import import_module
@@ -18,25 +21,31 @@ from pathlib import Path
 import pickle
 import sys
 import time
-from typing import TypeVar, ParamSpec
+# Because TypeVar and ParamSpec are executed at runtime, they must be imported:
+from typing import cast, TYPE_CHECKING, TypeVar, ParamSpec
+
 
 # Third Party Packages
 import keyring
-from langchain import OpenAI
-from langchain.chains import RetrievalQAWithSourcesChain
-from langchain.chains.combine_documents.base import BaseCombineDocumentsChain
-from langchain.chains.qa_with_sources.base import BaseQAWithSourcesChain
-from langchain.chains.question_answering import load_qa_chain
-from langchain.document_loaders import WebBaseLoader
-from langchain.embeddings import HuggingFaceEmbeddings, OpenAIEmbeddings
-from langchain.llms import HuggingFacePipeline
-from langchain.prompts import PromptTemplate
-from langchain.schema import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
-from langchain.vectorstores import FAISS
 import streamlit as st
-from streamlit.delta_generator import DeltaGenerator
-from transformers import AutoTokenizer  # type: ignore
+
+# Type Checking Only:
+if TYPE_CHECKING:
+    # Standard Library:
+    from collections.abc import Callable
+
+    # Third Party:
+    from langchain import OpenAI
+    from langchain.chains import RetrievalQAWithSourcesChain
+    from langchain.chains.combine_documents.base import BaseCombineDocumentsChain
+    from langchain.chains.qa_with_sources.base import BaseQAWithSourcesChain
+    from langchain.embeddings import HuggingFaceEmbeddings, OpenAIEmbeddings
+    from langchain.llms import HuggingFacePipeline
+    from langchain.schema import Document
+    from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
+    from langchain.vectorstores import FAISS
+    from streamlit.delta_generator import DeltaGenerator
+    from transformers import AutoTokenizer  # type: ignore
 
 
 # Globals:
@@ -103,15 +112,19 @@ def get_apikey(service: str=SERVICE, name: str=NAME) -> str|None:
 @cache
 # 'google/long-t5-tglobal-base'
 def get_t5_tokenizer(t5_model_name: str=T5_MODEL_NAME) -> AutoTokenizer:
+    # Lazy imports to improve load time:
+    AutoTokenizer = import_module('transformers').AutoTokenizer
     return AutoTokenizer.from_pretrained(t5_model_name)
 
 
 @cache
 def get_llm(model: str='OpenAI') -> OpenAI|HuggingFacePipeline:
-    # Lazy imports to improve load time:
-    pipeline = import_module('transformers').pipeline
-
     if model == 'OpenAI':
+        # Lazy imports to improve load time:
+        OpenAI_cls = import_module('langchain').OpenAI
+        from langchain import OpenAI
+        OpenAI_type = cast(type[OpenAI], OpenAI_cls)
+
         llm_params = {
             'max_tokens': 500,
             'model': 'gpt-3.5-turbo-instruct',
@@ -119,9 +132,14 @@ def get_llm(model: str='OpenAI') -> OpenAI|HuggingFacePipeline:
             'temperature': 0.9,
         }
         # Type annotations don't understand dict unpacking:
-        return OpenAI(**llm_params)  # type: ignore
+        return OpenAI_type(**llm_params)  # type: ignore
     elif model == 'T5':
         # Lazy imports to improve load time:
+        AutoTokenizer = import_module('transformers').AutoTokenizer
+        pipeline = import_module('transformers').pipeline
+        HuggingFacePipeline_cls = import_module('langchain').llms.HuggingFacePipeline
+        from langchain.llms import HuggingFacePipeline
+        HuggingFacePipeline_type = cast(type[HuggingFacePipeline], HuggingFacePipeline_cls)
         # T5Tokenizer = import_module('transformers').T5Tokenizer
         # T5ForConditionalGeneration = import_module('transformers').T5ForConditionalGeneration
         LongT5ForConditionalGeneration = import_module(
@@ -157,12 +175,17 @@ def get_llm(model: str='OpenAI') -> OpenAI|HuggingFacePipeline:
             device=0,
         )
 
-        return HuggingFacePipeline(pipeline=pipe)
+        return HuggingFacePipeline_type(pipeline=pipe)
     elif model == 'Mistral':
         # Or other 4-bit model from Hugging Face:
         # Lazy imports to improve load time:
         AutoModelForCausalLM = import_module('transformers').AutoModelForCausalLM
+        AutoTokenizer = import_module('transformers').AutoTokenizer
         float16 = import_module('torch').float16
+        HuggingFacePipeline_cls = import_module('langchain').llms.HuggingFacePipeline
+        from langchain.llms import HuggingFacePipeline
+        HuggingFacePipeline_type = cast(type[HuggingFacePipeline], HuggingFacePipeline_cls)
+        pipeline = import_module('transformers').pipeline
 
         model_name = 'mistralai/Mistral-7B-Instruct-v0.2'
         hf_token = get_apikey(service=SERVICE2, name=NAME2)
@@ -197,7 +220,7 @@ def get_llm(model: str='OpenAI') -> OpenAI|HuggingFacePipeline:
             pad_token_id=model_instance.config.eos_token_id,
         )
 
-        return HuggingFacePipeline(pipeline=pipe)
+        return HuggingFacePipeline_type(pipeline=pipe)
     else:
         raise ValueError(f'Unsupported model: {model}')
 
@@ -254,6 +277,9 @@ def build_sidebar_urls() -> list[str]:
 
 def split_tokens_custom(data: list[Document], tokenizer: AutoTokenizer, *, chunk_size: int=500,
                         chunk_overlap: int=50, verbose: bool=False) -> list[Document]:
+    # Lazy imports to improve load time:
+    Document = import_module('langchain').schema.Document
+
     split_docs = []
     for doc in data:
         tokens = tokenizer.encode(doc.page_content)
@@ -292,12 +318,17 @@ def get_text_chunks(llm_model: str, data: list[Document], verbose: bool=False) -
     # Type annotations:
     text_splitter: RecursiveCharacterTextSplitter|TokenTextSplitter|None
     if text_splitting == 'recursive':
+        # Lazy imports to improve load time:
+        RecursiveCharacterTextSplitter = import_module(
+            'langchain').text_splitter.RecursiveCharacterTextSplitter
         text_splitter = RecursiveCharacterTextSplitter(
             separators=['\n\n', '\n', '.', ','],
             chunk_size=1_000,
             # chunk_overlap=200
         )
     elif text_splitting == 'token':
+        # Lazy imports to improve load time:
+        TokenTextSplitter = import_module('langchain').text_splitter.TokenTextSplitter
         # Create a token-based splitter. Adjust chunk_size and chunk_overlap as needed.
         # The `encoding_name` parameter should correspond to your model's tokenizer.
         text_splitter = TokenTextSplitter(
@@ -309,6 +340,8 @@ def get_text_chunks(llm_model: str, data: list[Document], verbose: bool=False) -
         text_splitter = None
         tokenizer = get_t5_tokenizer()
     elif text_splitting == 'mistraltoken':
+        # Lazy imports to improve load time:
+        AutoTokenizer = import_module('transformers').AutoTokenizer
         text_splitter = None
         tokenizer = AutoTokenizer.from_pretrained('mistralai/Mistral-7B-Instruct-v0.2')
     else:
@@ -336,6 +369,12 @@ def get_text_chunks(llm_model: str, data: list[Document], verbose: bool=False) -
 def build_database(urls: list[str], main_placeholder: DeltaGenerator, *,
                    llm_model: str='recursive', embeddings_model: str='OpenAIEmbeddings',
                    verbose: bool=False) -> FAISS:
+    # Lazy imports to improve load time:
+    WebBaseLoader = import_module('langchain').document_loaders.WebBaseLoader
+    FAISS_cls = import_module('langchain').vectorstores.FAISS
+    from langchain.vectorstores import FAISS  # runtime import required for cast
+    FAISS_type = cast(type[FAISS], FAISS_cls)
+
     # Load data:
     main_placeholder.text('Data Loading...Started...✅✅✅')
     loaders = WebBaseLoader(urls)
@@ -349,16 +388,24 @@ def build_database(urls: list[str], main_placeholder: DeltaGenerator, *,
     embeddings: HuggingFaceEmbeddings|OpenAIEmbeddings
     # Create embeddings and save to FAISS index:
     if embeddings_model == 'HuggingFaceELECTRA':
+        # Lazy imports to improve load time:
+        HuggingFaceEmbeddings = import_module('langchain').embeddings.HuggingFaceEmbeddings
         # Hugging Face ELECTRA Model:
         embeddings = HuggingFaceEmbeddings(model_name='google/electra-small-discriminator')
     elif embeddings_model == 'HuggingFaceEmbeddings':
+        # Lazy imports to improve load time:
+        HuggingFaceEmbeddings = import_module('langchain').embeddings.HuggingFaceEmbeddings
         # Hugging Face MiniLM Model:
         embeddings = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')
     elif embeddings_model == 'HuggingFaceEmbeddingsHigh':
+        # Lazy imports to improve load time:
+        HuggingFaceEmbeddings = import_module('langchain').embeddings.HuggingFaceEmbeddings
         # Hugging Face MPNet Model:
         embeddings = HuggingFaceEmbeddings(model_name='sentence-transformers/all-mpnet-base-v2')
     elif embeddings_model == 'OpenAIEmbeddings':
-        embeddings = OpenAIEmbeddings(openai_api_key=get_apikey())  # type: ignore
+        # Lazy imports to improve load time:
+        OpenAIEmbeddings = import_module('langchain').embeddings.OpenAIEmbeddings
+        embeddings = OpenAIEmbeddings(openai_api_key=get_apikey())
     else:
         raise ValueError(f'Unsupported embeddings model: {embeddings_model}')
 
@@ -369,7 +416,7 @@ def build_database(urls: list[str], main_placeholder: DeltaGenerator, *,
         )
 
     main_placeholder.text('Building Vector Database with FAISS...✅✅✅')
-    return FAISS.from_documents(docs, embeddings)
+    return FAISS_type.from_documents(docs, embeddings)
 
 
 def save_database(vectorstore: FAISS, file_path: Path, main_placeholder: DeltaGenerator) -> None:
@@ -427,6 +474,8 @@ def fit_query(query: str, llm_model: str, *, max_tokens: int=1024, verbose: bool
     query_max_tokens = max_tokens//2
 
     if llm_model == 'Mistral':
+        # Lazy imports to improve load time:
+        AutoTokenizer = import_module('transformers').AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained('mistralai/Mistral-7B-Instruct-v0.2')
     elif llm_model == 'T5':
         tokenizer = get_t5_tokenizer(T5_MODEL_NAME)
@@ -450,6 +499,10 @@ def fit_query(query: str, llm_model: str, *, max_tokens: int=1024, verbose: bool
 def query_llm(query: str, main_placeholder: DeltaGenerator, vectorstore: FAISS, *,
               llm_model: str='OpenAI', verbose: bool=False) -> dict[str, str]:
     main_placeholder.text(f'Querying {llm_model} LLM using Article URL(s)...✅✅✅')
+
+    # Lazy imports to improve load time:
+    load_qa_chain = import_module('langchain').chains.question_answering.load_qa_chain
+    PromptTemplate = import_module('langchain').prompts.PromptTemplate
 
     # Type annotations:
     chain: BaseCombineDocumentsChain|BaseQAWithSourcesChain|RetrievalQAWithSourcesChain
@@ -524,6 +577,8 @@ def query_llm(query: str, main_placeholder: DeltaGenerator, vectorstore: FAISS, 
         result = chain({'input_documents': docs, 'question': query})
         answer = 'output_text'
     elif llm_model == 'OpenAI':
+        # Lazy imports to improve load time:
+        RetrievalQAWithSourcesChain = import_module('langchain').chains.RetrievalQAWithSourcesChain
         if verbose:
             print(f'query_llm:  Using {llm_model} LLM...', file=sys.stderr, flush=True)
         chain = RetrievalQAWithSourcesChain.from_llm(
